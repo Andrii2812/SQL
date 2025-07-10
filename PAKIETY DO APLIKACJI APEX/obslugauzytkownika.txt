@@ -1,0 +1,328 @@
+create or replace PACKAGE ObslugaUzytkownik IS
+
+  PROCEDURE DodajUzytkownika( 
+      imieU VARCHAR2, 
+      emailU VARCHAR2, 
+      hasloU VARCHAR2, 
+      data_urodzeniaU DATE, 
+      typ_uzytkownikaU VARCHAR2 
+  );
+
+  PROCEDURE UsunUzytkownika(
+      id_uzytkownikU IN INTEGER
+  );
+
+  PROCEDURE ZaktualizujDaneUzytkownika(
+      id_uzytkownikU IN INTEGER,
+      nowe_imieU IN VARCHAR2 DEFAULT NULL,
+      nowy_emailU IN VARCHAR2 DEFAULT NULL,
+      nowy_typ_uzytkownikaU IN VARCHAR2 DEFAULT NULL
+  );
+
+  PROCEDURE ZmienHaslo (
+      id_uzytkownikU IN INTEGER,
+      stare_hasloU IN VARCHAR2,
+      nowe_hasloU IN VARCHAR2
+  );
+
+  FUNCTION CzyUzytkownikPremium (
+      id_uzytkownikU IN INTEGER
+  ) RETURN BOOLEAN;
+
+  FUNCTION obsluga_liczby(str VARCHAR2) RETURN BOOLEAN;
+
+  FUNCTION obsluga_litery(str VARCHAR2) RETURN BOOLEAN;
+
+  FUNCTION obsluga_symbole(
+    str            VARCHAR2,
+    expected_symbol CHAR DEFAULT NULL
+) RETURN BOOLEAN;
+
+END ObslugaUzytkownik;
+/
+
+
+
+create or replace PACKAGE BODY ObslugaUzytkownik IS
+
+  PROCEDURE DodajUzytkownika( 
+      imieU VARCHAR2, 
+      emailU VARCHAR2, 
+      hasloU VARCHAR2, 
+      data_urodzeniaU DATE, 
+      typ_uzytkownikaU VARCHAR2 
+) IS 
+      brak_imienia EXCEPTION; 
+      brak_emailu EXCEPTION; 
+      brak_hasla EXCEPTION; 
+      brak_typu_uzytkownika EXCEPTION; 
+      max_id_uzytkownika NUMBER; 
+BEGIN 
+    -- Tworzenie nowej kolekcji, jeśli jeszcze nie istnieje
+    IF NOT APEX_COLLECTION.COLLECTION_EXISTS('KOLEKCJA_UZYTKOWNIKOW') THEN
+        APEX_COLLECTION.CREATE_COLLECTION('KOLEKCJA_UZYTKOWNIKOW');
+    END IF;
+
+    -- Walidacja danych wejściowych 
+    IF imieU IS NULL OR obsluga_liczby(imieU) THEN 
+        RAISE brak_imienia; 
+    ELSIF emailU IS NULL OR NOT obsluga_symbole(emailU,'@') THEN 
+        RAISE brak_emailu; 
+    ELSIF hasloU IS NULL THEN 
+        RAISE brak_hasla; 
+    ELSIF typ_uzytkownikaU NOT IN ('REGULAR', 'PREMIUM', 'FAMILY') THEN 
+        RAISE brak_typu_uzytkownika; 
+    ELSE 
+        -- Generowanie nowego ID użytkownika 
+        SELECT NVL(MAX(id_uzytkownik), 0) + 1 INTO max_id_uzytkownika 
+        FROM Uzytkownik; 
+
+        -- Dodanie danych użytkownika do kolekcji APEX
+        APEX_COLLECTION.ADD_MEMBER(
+            p_collection_name => 'KOLEKCJA_UZYTKOWNIKOW',
+            p_c001 => max_id_uzytkownika,
+            p_c002 => imieU,
+            p_c003 => emailU,
+            p_c004 => hasloU,
+            p_c005 => TO_CHAR(data_urodzeniaU, 'YYYY-MM-DD'),
+            p_c006 => typ_uzytkownikaU
+        );
+
+        -- Komunikat do logów
+        DBMS_OUTPUT.PUT_LINE('Dane użytkownika zapisano do kolekcji KOLEKCJA_UZYTKOWNIKOW.');
+    END IF; 
+
+EXCEPTION 
+    WHEN brak_imienia THEN 
+        DBMS_OUTPUT.PUT_LINE('Nie wprowadzono imienia lub zawiera niedozwolone znaki. Uzupełnij dane.'); 
+    WHEN brak_emailu THEN 
+        DBMS_OUTPUT.PUT_LINE('Nie wprowadzono adresu e-mail lub jest on nieprawidłowy. Uzupełnij dane.'); 
+    WHEN brak_hasla THEN 
+        DBMS_OUTPUT.PUT_LINE('Nie wprowadzono hasła lub jest ono nieprawidłowe. Uzupełnij dane.'); 
+    WHEN brak_typu_uzytkownika THEN 
+        DBMS_OUTPUT.PUT_LINE('Nie wprowadzono poprawnego typu subskrypcji. Dozwolone wartości: REGULAR, PREMIUM, FAMILY.'); 
+    WHEN OTHERS THEN 
+        DBMS_OUTPUT.PUT_LINE('Wystąpił nieoczekiwany błąd podczas dodawania użytkownika.'); 
+END DodajUzytkownika;
+
+
+  PROCEDURE UsunUzytkownika(
+    id_uzytkownikU IN INTEGER
+) IS
+BEGIN
+    -- Usunięcie powiązanych danych z tabel HistoriaOdtworzen
+    DELETE FROM HistoriaOdtworzen
+    WHERE id_uzytkownik = id_uzytkownikU;
+
+    -- Usunięcie powiązanych danych z tabel Subskrypcje
+    DELETE FROM Uzytkownik_Plan_Subskrypcyjny
+    WHERE UZYTKOWNIK_id_uzytkownik = id_uzytkownikU;
+
+    -- Usunięcie powiązanych danych z tabel Platnosci
+    DELETE FROM Platnosc
+    WHERE UZYTKOWNIK_id_uzytkownik = id_uzytkownikU;
+
+    DELETE FROM Likes
+	where uzytkownik_id_uzytkownik = id_uzytkownikU;
+
+    DELETE FROM LISTY_ODTWARZANIA
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = ID_uzytkownikU;
+
+    DELETE FROM OBSERWUJACY
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK =ID_UZYTKOWNIKU;
+
+    DELETE FROM UZYTKOWNIK_PREMIUM
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = ID_UZYTKOWNIKU;
+    -- Usunięcie rekordu użytkownika z tabeli Uzytkownik
+    DELETE FROM Uzytkownik
+    WHERE id_uzytkownik = id_uzytkownikU;
+
+    -- Informacja o powodzeniu operacji
+    DBMS_OUTPUT.PUT_LINE('Użytkownik oraz wszystkie powiązane dane zostały pomyślnie usunięte.');
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Obsługa sytuacji, gdy użytkownik nie istnieje
+        DBMS_OUTPUT.PUT_LINE('Nie znaleziono użytkownika o podanym ID.');
+    WHEN OTHERS THEN
+        -- Obsługa wszelkich innych błędów
+        DBMS_OUTPUT.PUT_LINE('Wystąpił błąd podczas usuwania użytkownika.');
+END UsunUzytkownika;
+
+
+  PROCEDURE ZaktualizujDaneUzytkownika(
+      id_uzytkownikU IN INTEGER,
+      nowe_imieU IN VARCHAR2 DEFAULT NULL,
+      nowy_emailU IN VARCHAR2 DEFAULT NULL,
+      nowy_typ_uzytkownikaU IN VARCHAR2 DEFAULT NULL
+  ) IS
+      brak_liter EXCEPTION;
+      brak_symboli EXCEPTION;
+      brak_liczb EXCEPTION;
+      niedozwolony_typ_uzytkownika EXCEPTION;
+      czy_premium BOOLEAN;
+  BEGIN
+      czy_premium := CzyUzytkownikPremium(id_uzytkownikU);
+
+      IF nowe_imieU IS NOT NULL AND (obsluga_liczby(nowe_imieU) OR obsluga_symbole(nowe_imieU)) THEN
+          RAISE brak_liter;
+      ELSIF nowy_emailU IS NOT NULL AND NOT obsluga_symbole(nowy_emailU,'@') THEN
+          RAISE brak_symboli;
+      ELSIF nowy_typ_uzytkownikaU IS NOT NULL AND nowy_typ_uzytkownikaU NOT IN ('BASIC', 'PREMIUM', 'FAMILY') THEN
+          RAISE niedozwolony_typ_uzytkownika;
+      END IF;
+
+      IF czy_premium AND nowy_typ_uzytkownikaU IS NOT NULL AND nowy_typ_uzytkownikaU != 'PREMIUM' THEN
+          DBMS_OUTPUT.PUT_LINE('Użytkownik premium nie może zmienić subskrypcji na inną niż PREMIUM.');
+          RETURN;
+      END IF;
+
+      UPDATE Uzytkownik
+      SET imie = NVL(nowe_imieU, imie),
+          email = NVL(nowy_emailU, email),
+          typ_uzytkownika = NVL(nowy_typ_uzytkownikaU, typ_uzytkownika)
+      WHERE id_uzytkownik = id_uzytkownikU;
+
+      DBMS_OUTPUT.PUT_LINE('Dane użytkownika zostały pomyślnie zaktualizowane.');
+  EXCEPTION
+      WHEN brak_liter THEN
+          DBMS_OUTPUT.PUT_LINE('Imię zawiera niedozwolone znaki.');
+      WHEN brak_symboli THEN
+          DBMS_OUTPUT.PUT_LINE('Nowy email musi zawierać co najmniej jeden symbol (@ lub podobny).');
+      WHEN niedozwolony_typ_uzytkownika THEN
+          DBMS_OUTPUT.PUT_LINE('Nieprawidłowy typ subskrypcji. Dozwolone wartości: BASIC, PREMIUM, FAMILY.');
+      WHEN NO_DATA_FOUND THEN
+          DBMS_OUTPUT.PUT_LINE('Nie znaleziono użytkownika o podanym ID.');
+      WHEN OTHERS THEN
+          DBMS_OUTPUT.PUT_LINE('Wystąpił błąd podczas aktualizacji danych użytkownika.');
+  END ZaktualizujDaneUzytkownika;
+
+  PROCEDURE ZmienHaslo (
+      id_uzytkownikU IN INTEGER,
+      stare_hasloU IN VARCHAR2,
+      nowe_hasloU IN VARCHAR2
+  ) IS
+      aktualne_hasloU VARCHAR2(100);
+      brak_liter EXCEPTION;
+      brak_liczb EXCEPTION;
+      brak_symboli EXCEPTION;
+  BEGIN
+      -- Pobranie obecnego hasła użytkownika
+      SELECT haslo INTO aktualne_hasloU
+      FROM Uzytkownik
+      WHERE id_uzytkownik = id_uzytkownikU;
+
+      -- Sprawdzenie poprawności starego hasła
+      IF aktualne_hasloU != stare_hasloU THEN
+          DBMS_OUTPUT.PUT_LINE('Stare hasło jest niepoprawne.');
+          RETURN;
+      END IF;
+
+      -- Sprawdzenie, czy nowe hasło zawiera litery, liczby i symbole
+      IF NOT obsluga_litery(nowe_hasloU) THEN
+          RAISE brak_liter;
+      ELSIF NOT obsluga_liczby(nowe_hasloU) THEN
+          RAISE brak_liczb;
+      ELSIF NOT obsluga_symbole(nowe_hasloU) THEN
+          RAISE brak_symboli;
+      END IF;
+
+      -- Aktualizacja hasła
+      UPDATE Uzytkownik
+      SET haslo = nowe_hasloU
+      WHERE id_uzytkownik = id_uzytkownikU;
+
+      DBMS_OUTPUT.PUT_LINE('Hasło zostało pomyślnie zmienione.');
+
+  EXCEPTION
+      WHEN brak_liter THEN
+          DBMS_OUTPUT.PUT_LINE('Nowe hasło musi zawierać co najmniej jedną literę.');
+      WHEN brak_liczb THEN
+          DBMS_OUTPUT.PUT_LINE('Nowe hasło musi zawierać co najmniej jedną cyfrę.');
+      WHEN brak_symboli THEN
+          DBMS_OUTPUT.PUT_LINE('Nowe hasło musi zawierać co najmniej jeden symbol.');
+      WHEN NO_DATA_FOUND THEN
+          DBMS_OUTPUT.PUT_LINE('Nie znaleziono użytkownika o podanym ID.');
+      WHEN OTHERS THEN
+          DBMS_OUTPUT.PUT_LINE('Wystąpił błąd podczas zmiany hasła.');
+  END ZmienHaslo;
+
+  FUNCTION CzyUzytkownikPremium (
+      id_uzytkownikU IN INTEGER
+  ) RETURN BOOLEAN IS
+      typ_uzytkownikaU VARCHAR2(20);
+  BEGIN
+      -- Pobranie typu subskrypcji użytkownika
+      SELECT typ_uzytkownika 
+        INTO typ_uzytkownikaU
+        FROM Uzytkownik
+       WHERE id_uzytkownik = id_uzytkownikU;
+
+      -- Sprawdzenie, czy subskrypcja to PREMIUM
+      IF typ_uzytkownikaU = 'PREMIUM' THEN
+          RETURN TRUE;
+      ELSE
+          RETURN FALSE;
+      END IF;
+  EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+          RETURN FALSE; -- Jeśli użytkownik nie istnieje, zwracamy FALSE
+  END CzyUzytkownikPremium;
+
+  FUNCTION obsluga_liczby(str VARCHAR2) RETURN BOOLEAN IS
+BEGIN
+    IF str IS NULL THEN
+        RETURN FALSE; -- Obsługa przypadku, gdy str jest NULL
+    END IF;
+
+    FOR i IN 1..LENGTH(str) LOOP
+        IF ASCII(SUBSTR(str, i, 1)) BETWEEN ASCII('0') AND ASCII('9') THEN
+            RETURN TRUE;
+        END IF;
+    END LOOP;
+
+    RETURN FALSE;
+END obsluga_liczby;
+
+  FUNCTION obsluga_litery(str VARCHAR2) RETURN BOOLEAN IS
+BEGIN
+    IF str IS NULL THEN
+        RETURN FALSE; -- Obsługa przypadku, gdy str jest NULL
+    END IF;
+
+    FOR i IN 1..LENGTH(str) LOOP
+        IF (ASCII(SUBSTR(str, i, 1)) BETWEEN ASCII('A') AND ASCII('Z'))
+           OR (ASCII(SUBSTR(str, i, 1)) BETWEEN ASCII('a') AND ASCII('z')) THEN
+            RETURN TRUE;
+        END IF;
+    END LOOP;
+
+    RETURN FALSE;
+END obsluga_litery;
+
+  FUNCTION obsluga_symbole(str VARCHAR2, expected_symbol CHAR DEFAULT NULL) RETURN BOOLEAN IS
+BEGIN
+    IF str IS NULL THEN
+        RETURN FALSE; -- Obsługa przypadku, gdy str jest NULL
+    END IF;
+
+    FOR i IN 1..LENGTH(str) LOOP
+        -- Jeśli `expected_symbol` jest ustawiony, sprawdzamy tylko ten znak
+        IF expected_symbol IS NOT NULL THEN
+            IF SUBSTR(str, i, 1) = expected_symbol THEN
+                RETURN TRUE;
+            END IF;
+        ELSE
+            -- Sprawdzenie dowolnego znaku specjalnego
+            IF NOT ((ASCII(SUBSTR(str, i, 1)) BETWEEN ASCII('A') AND ASCII('Z')) OR
+                    (ASCII(SUBSTR(str, i, 1)) BETWEEN ASCII('a') AND ASCII('z')) OR
+                    (ASCII(SUBSTR(str, i, 1)) BETWEEN ASCII('0') AND ASCII('9'))) THEN
+                RETURN TRUE;
+            END IF;
+        END IF;
+    END LOOP;
+
+    RETURN FALSE;
+END obsluga_symbole;
+
+END ObslugaUzytkownik;
+/

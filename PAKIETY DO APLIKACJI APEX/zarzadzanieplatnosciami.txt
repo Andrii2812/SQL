@@ -1,0 +1,193 @@
+create or replace PACKAGE ZarzadzaniePlatnosciami AS
+  -- Funkcje
+  FUNCTION SprawdzStatusSubskrypcji(id_uzytkownik NUMBER) RETURN VARCHAR2;
+  FUNCTION PobierzCzasTrwaniaSubskrypcji(uzytkownik_id NUMBER) RETURN NUMBER;
+  FUNCTION ObliczKwoteZaOkres(start_date DATE, end_date DATE, plan_id NUMBER) RETURN NUMBER;
+  FUNCTION CzyPlatnoscZrealizowana(uzytkownik_id NUMBER) RETURN BOOLEAN;
+  FUNCTION IleDniDoKonca(uzytkownik_id NUMBER) RETURN NUMBER;
+
+  -- Procedury
+  PROCEDURE ZarejestrujPlatnosc(
+    id_platnosc NUMBER,
+    id_uzytkownik NUMBER,
+    metoda VARCHAR2,
+    kwota NUMBER
+  );
+  PROCEDURE ZmienPlanSubskrypcji(
+    uzytkownik_id NUMBER,
+    nowy_plan_id NUMBER
+  );
+  PROCEDURE AnulujSubskrypcje(uzytkownik_id NUMBER);
+  PROCEDURE OplacSubskrypcje(uzytkownik_id NUMBER, nowy_plan_id NUMBER);
+  PROCEDURE PrzypomnijOZakonczeniuSubskrypcji;
+END ZarzadzaniePlatnosciami;
+/
+
+
+
+create or replace PACKAGE BODY ZarzadzaniePlatnosciami AS
+  -- Funkcja: Sprawdzanie statusu subskrypcji
+  FUNCTION SprawdzStatusSubskrypcji(id_uzytkownik NUMBER) RETURN VARCHAR2 IS
+    v_status VARCHAR2(20);
+  BEGIN
+    SELECT STATUS
+    INTO v_status
+    FROM UZYTKOWNIK_PLAN_SUBSKRYPCYJNY
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = id_uzytkownik
+      AND DATA_KONIEC > SYSDATE;
+    RETURN v_status;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN 'BRAK SUBSKRYPCJI';
+  END SprawdzStatusSubskrypcji;
+
+  -- Funkcja: Pobranie czasu trwania subskrypcji w dniach
+  FUNCTION PobierzCzasTrwaniaSubskrypcji(uzytkownik_id NUMBER) RETURN NUMBER IS
+    v_czas_trwania NUMBER;
+  BEGIN
+    SELECT (DATA_KONIEC - DATA_START)
+    INTO v_czas_trwania
+    FROM UZYTKOWNIK_PLAN_SUBSKRYPCYJNY
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = uzytkownik_id
+      AND DATA_KONIEC > SYSDATE;
+    RETURN v_czas_trwania;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN 0;
+  END PobierzCzasTrwaniaSubskrypcji;
+
+  -- Funkcja: Obliczanie kwoty za dany okres
+  FUNCTION ObliczKwoteZaOkres(start_date DATE, end_date DATE, plan_id NUMBER) RETURN NUMBER IS
+    v_plan_wartosc NUMBER;
+    v_czas_trwania NUMBER;
+  BEGIN
+    SELECT WARTOSC
+    INTO v_plan_wartosc
+    FROM PLAN_SUBSKRYPCYJNY
+    WHERE ID_PLAN_SUBSKRYPCYJNY = plan_id;
+
+    v_czas_trwania := end_date - start_date;
+    RETURN v_plan_wartosc * v_czas_trwania / 30; -- Przelicznik miesięczny
+  END ObliczKwoteZaOkres;
+
+   -- Funkcja: Czy płatność została zrealizowana w dzisiejszym dniu
+  FUNCTION CzyPlatnoscZrealizowana(uzytkownik_id NUMBER) RETURN BOOLEAN IS
+    v_count NUMBER;
+  BEGIN
+    SELECT COUNT(*)
+    INTO v_count
+    FROM PLATNOSC
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = uzytkownik_id
+      AND TRUNC(DATA_PLATNOSC) = TRUNC(SYSDATE);
+
+    RETURN v_count > 0;
+  END CzyPlatnoscZrealizowana;
+
+  -- Funkcja: Ile dni do końca subskrypcji
+  FUNCTION IleDniDoKonca(uzytkownik_id NUMBER) RETURN NUMBER IS
+    v_dni NUMBER;
+  BEGIN
+    SELECT DATA_KONIEC - TRUNC(SYSDATE)
+    INTO v_dni
+    FROM UZYTKOWNIK_PLAN_SUBSKRYPCYJNY
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = uzytkownik_id
+      AND DATA_KONIEC > SYSDATE;
+    RETURN v_dni;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN NULL;
+  END IleDniDoKonca;
+
+  -- Procedura: Rejestracja płatności
+  PROCEDURE ZarejestrujPlatnosc(
+    id_platnosc NUMBER,
+    id_uzytkownik NUMBER,
+    metoda VARCHAR2,
+    kwota NUMBER
+  ) IS
+  BEGIN
+    INSERT INTO PLATNOSC (ID_PLATNOSC, UZYTKOWNIK_ID_UZYTKOWNIK, METODA_PLATNOSCI, DATA_PLATNOSC, KWOTA)
+    VALUES (id_platnosc, id_uzytkownik, metoda, SYSDATE, kwota);
+  END ZarejestrujPlatnosc;
+
+  -- Procedura: Zmiana planu subskrypcji
+  PROCEDURE ZmienPlanSubskrypcji(
+    uzytkownik_id NUMBER,
+    nowy_plan_id NUMBER
+  ) IS
+  BEGIN
+    UPDATE UZYTKOWNIK_PLAN_SUBSKRYPCYJNY
+    SET PLAN_SUBSKRYPCYJNY_ID_PLAN_SUBSKRYPCYJNY = nowy_plan_id,
+        DATA_START = SYSDATE,
+        DATA_KONIEC = ADD_MONTHS(SYSDATE, 1),
+        STATUS = 'AKTYWNA'
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = uzytkownik_id;
+  END ZmienPlanSubskrypcji;
+
+  -- Procedura: Anulowanie subskrypcji
+  PROCEDURE AnulujSubskrypcje(uzytkownik_id NUMBER) IS
+  BEGIN
+    UPDATE UZYTKOWNIK_PLAN_SUBSKRYPCYJNY
+    SET STATUS = 'ANULOWANA',
+        DATA_KONIEC = SYSDATE
+    WHERE UZYTKOWNIK_ID_UZYTKOWNIK = uzytkownik_id;
+  END AnulujSubskrypcje;
+
+  -- Złożona procedura: Opłacenie subskrypcji
+  PROCEDURE OplacSubskrypcje(uzytkownik_id NUMBER, nowy_plan_id NUMBER) IS
+    v_kwota NUMBER;
+    v_plan_wartosc NUMBER;
+    v_new_platnosc_id NUMBER;
+  BEGIN
+    SELECT WARTOSC
+    INTO v_plan_wartosc
+    FROM PLAN_SUBSKRYPCYJNY
+    WHERE ID_PLAN_SUBSKRYPCYJNY = nowy_plan_id;
+
+    v_kwota := ObliczKwoteZaOkres(SYSDATE, ADD_MONTHS(SYSDATE, 1), nowy_plan_id);
+
+    SELECT NVL(MAX(ID_PLATNOSC), 0) + 1
+    INTO v_new_platnosc_id
+    FROM PLATNOSC;
+
+    ZarejestrujPlatnosc(
+      id_platnosc => v_new_platnosc_id,
+      id_uzytkownik => uzytkownik_id,
+      metoda => 'ONLINE',
+      kwota => v_kwota
+    );
+
+    ZmienPlanSubskrypcji(uzytkownik_id, nowy_plan_id);
+  END OplacSubskrypcje;
+
+ PROCEDURE PrzypomnijOZakonczeniuSubskrypcji IS
+    CURSOR uzytkownicy_cursor IS
+        SELECT U.EMAIL, UPS.DATA_KONIEC
+        FROM UZYTKOWNIK_PLAN_SUBSKRYPCYJNY UPS
+        JOIN UZYTKOWNIK U ON U.ID_UZYTKOWNIK = UPS.UZYTKOWNIK_ID_UZYTKOWNIK
+        WHERE UPS.DATA_KONIEC - TRUNC(SYSDATE) <= 3
+          AND UPS.STATUS = 'AKTYWNA';
+    v_email VARCHAR2(50);
+    v_data_koniec DATE;
+BEGIN
+    OPEN uzytkownicy_cursor;
+    LOOP
+        FETCH uzytkownicy_cursor INTO v_email, v_data_koniec;
+        EXIT WHEN uzytkownicy_cursor%NOTFOUND;
+
+        -- Logowanie do tabeli
+        INSERT INTO LOG_PRZYPOMNIENIA (data_log, email, komunikat)
+        VALUES (
+            SYSTIMESTAMP, 
+            v_email, 
+            'Przypomnienie wysłane. Data zakończenia: ' || TO_CHAR(v_data_koniec, 'YYYY-MM-DD')
+        );
+
+        DBMS_OUTPUT.PUT_LINE('Wysyłanie przypomnienia do: ' || v_email ||
+                             '. Data zakończenia: ' || TO_CHAR(v_data_koniec, 'YYYY-MM-DD'));
+    END LOOP;
+    CLOSE uzytkownicy_cursor;
+END PrzypomnijOZakonczeniuSubskrypcji;
+
+END ZarzadzaniePlatnosciami;
+/

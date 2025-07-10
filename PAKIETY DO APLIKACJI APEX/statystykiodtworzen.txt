@@ -1,0 +1,324 @@
+create or replace PACKAGE StatystykiOdtworzen AS
+    FUNCTION LiczbaOdtworzenUtworu(id_utworU INT) RETURN NUMBER;
+    FUNCTION SredniCzasOdtworzenUtworu(id_utworU INT) RETURN NUMBER;
+    FUNCTION NajczesciejOdtwarzanyUtworDnia(data DATE) RETURN NUMBER;
+    FUNCTION LacznyCzasOdtwarzaniaUzytkownika(id_uzytkownik INT) RETURN NUMBER;
+    FUNCTION ZnajdzNajczesciejOdtwarzanyUtworUzytkownika(
+    id_uzytkownik IN NUMBER
+) RETURN VARCHAR2;
+
+
+    PROCEDURE GenerujRaportOdtworzen(
+        id_utworU IN INTEGER
+    );
+
+    
+
+    
+    PROCEDURE ZapiszNajczesciejOdtwarzanyUtwor(
+        dataU IN DATE
+    );
+    
+     PROCEDURE PodsumowanieOdtwarzaniaUzytkownika(
+        id_uzytkownikU IN INTEGER
+    );
+    
+    PROCEDURE UsunStareDaneOdtworzen(
+        liczba_dni IN INTEGER
+    );
+END StatystykiOdtworzen;
+/
+
+
+
+create or replace PACKAGE BODY StatystykiOdtworzen AS
+    FUNCTION LiczbaOdtworzenUtworu(id_utworU INT) RETURN NUMBER IS
+        liczba NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO liczba
+        FROM HistoriaOdtworzen
+        WHERE HistoriaOdtworzen.id_utworu = LiczbaOdtworzenUtworu.id_utworU;
+        RETURN liczba;
+    END LiczbaOdtworzenUtworu;
+
+    FUNCTION SredniCzasOdtworzenUtworu(id_utworU INT) RETURN NUMBER IS
+        sredni_czas NUMBER;
+    BEGIN
+        SELECT AVG(czas_odtworzenia) INTO sredni_czas
+        FROM HistoriaOdtworzen
+        WHERE HistoriaOdtworzen.id_utworu = SredniCzasOdtworzenUtworu.id_utworU;
+        RETURN sredni_czas;
+    END SredniCzasOdtworzenUtworu;
+
+    FUNCTION NajczesciejOdtwarzanyUtworDnia(data DATE) RETURN NUMBER IS
+        id_utwor NUMBER;
+    BEGIN
+        SELECT id_utworu
+        INTO id_utwor
+        FROM (
+            SELECT id_utworu, COUNT(*) AS liczba_odtworzen
+            FROM HistoriaOdtworzen
+            WHERE TRUNC(data_odtworzenia) = data
+            GROUP BY id_utworu
+            ORDER BY liczba_odtworzen DESC
+        )
+        WHERE ROWNUM = 1;
+        RETURN id_utwor;
+    END NajczesciejOdtwarzanyUtworDnia;
+
+    FUNCTION LacznyCzasOdtwarzaniaUzytkownika(id_uzytkownik INT) 
+RETURN NUMBER IS 
+    calkowity_czas NUMBER := 0;
+BEGIN
+    -- Debugging
+    DBMS_OUTPUT.PUT_LINE('Processing total playback time for user ID: ' || id_uzytkownik);
+    
+    
+    DECLARE
+        record_count NUMBER := 0;
+    BEGIN
+        SELECT COUNT(*) 
+        INTO record_count
+        FROM historiaodtworzen
+        WHERE id_uzytkownik = LacznyCzasOdtwarzaniaUzytkownika.id_uzytkownik;
+
+        -- Debugging
+        DBMS_OUTPUT.PUT_LINE('Number of records found for user ID ' || id_uzytkownik || ': ' || record_count);
+    END;
+
+   
+    SELECT NVL(SUM(czas_odtworzenia), 0) 
+    INTO calkowity_czas
+    FROM historiaodtworzen
+    WHERE id_uzytkownik = LacznyCzasOdtwarzaniaUzytkownika.id_uzytkownik; 
+
+    -- Debugging
+    DBMS_OUTPUT.PUT_LINE('Total playback time for user ID ' || id_uzytkownik || ': ' || calkowity_czas);
+
+    
+    RETURN calkowity_czas;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Debugging
+        DBMS_OUTPUT.PUT_LINE('Nie  znaleziono danych dla użytkownika o ID: ' || id_uzytkownik);
+        RETURN 0;
+    WHEN OTHERS THEN
+        -- Debugging
+        DBMS_OUTPUT.PUT_LINE('An unexpected error occurred for user ID: ' || id_uzytkownik);
+        RAISE_APPLICATION_ERROR(-20001, 'An error occurred while calculating the playback time.');
+END LacznyCzasOdtwarzaniaUzytkownika;
+
+
+
+
+
+
+
+
+PROCEDURE GenerujRaportOdtworzen (
+    id_utworU IN INTEGER
+) IS
+    liczba_odtworzen NUMBER;
+    sredni_czas NUMBER;
+    nazwa_utworu VARCHAR2(100);
+    nazwa_artysty VARCHAR2(100);
+BEGIN
+    -- Usuń istniejący raport dla tego samego ID utworu
+    DELETE FROM RaportOdtworzen
+    WHERE id_utworu = GenerujRaportOdtworzen.id_utworU;
+
+    -- Pobierz nazwę utworu i artysty
+    SELECT 
+        u.nazwa, 
+        a.nazwa
+    INTO 
+        nazwa_utworu, 
+        nazwa_artysty
+    FROM 
+        Utwory u
+    JOIN 
+        Album al ON u.album_id_album = al.id_album
+    JOIN 
+        Artysta a ON al.artysta_id_artyst = a.id_artyst
+    WHERE 
+        u.id_utworu = GenerujRaportOdtworzen.id_utworU;
+
+    -- Pobierz liczbę odtworzeń i średni czas
+    liczba_odtworzen := LiczbaOdtworzenUtworu(id_utworU);
+    sredni_czas := SredniCzasOdtworzenUtworu(id_utworU);
+
+    -- Wstaw dane do tabeli
+    INSERT INTO RaportOdtworzen (
+        id_utworu, 
+        nazwa_utworu, 
+        nazwa_artysty, 
+        liczba_odtworzen, 
+        sredni_czas
+    ) VALUES (
+        id_utworU, 
+        nazwa_utworu, 
+        nazwa_artysty, 
+        liczba_odtworzen, 
+        sredni_czas
+    );
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('Nie znaleziono danych dla utworu o ID: ' || id_utworU);
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Wystąpił nieoczekiwany błąd podczas generowania raportu.');
+        DBMS_OUTPUT.PUT_LINE('Kod błędu: ' || SQLCODE);
+        DBMS_OUTPUT.PUT_LINE('Komunikat błędu: ' || SQLERRM);
+END GenerujRaportOdtworzen;
+
+
+
+
+
+    PROCEDURE ZapiszNajczesciejOdtwarzanyUtwor (
+    dataU IN DATE
+) IS
+    id_utwor NUMBER;
+    liczba_odtworzen NUMBER;
+BEGIN
+    -- Pobierz najczęściej odtwarzany utwór dnia
+    id_utwor := NajczesciejOdtwarzanyUtworDnia(dataU);
+
+    -- Sprawdź liczbę odtworzeń tego utworu
+    liczba_odtworzen := LiczbaOdtworzenUtworu(id_utwor);
+
+    -- Wstaw dane do tabeli NajczesciejOdtwarzane
+    INSERT INTO NajczesciejOdtwarzane (
+        data, 
+        id_utworu, 
+        liczba_odtworzen
+    ) VALUES (
+        dataU, 
+        id_utwor, 
+        liczba_odtworzen
+    );
+
+    -- Wyświetl komunikat
+    DBMS_OUTPUT.PUT_LINE('Najczęściej odtwarzany utwór dnia ' || TO_CHAR(dataU, 'YYYY-MM-DD') || ' zapisano do widoku.');
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('Brak danych o odtworzeniach dla dnia: ' || TO_CHAR(dataU, 'YYYY-MM-DD'));
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Wystąpił nieoczekiwany błąd podczas zapisywania danych.');
+END ZapiszNajczesciejOdtwarzanyUtwor;
+
+
+    PROCEDURE PodsumowanieOdtwarzaniaUzytkownika(
+    id_uzytkownikU IN INTEGER
+) IS
+    -- Deklaracja kursora referencyjnego
+    wynik SYS_REFCURSOR;
+
+    -- Zmienne pomocnicze do iteracji
+    v_id_uzytkownik NUMBER;
+    v_imie_uzytkownika VARCHAR2(100);
+    v_laczny_czas_odtworzen NUMBER;
+    v_najczesciej_odtwarzany_utwor VARCHAR2(100);
+BEGIN
+    -- Otwórz kursor referencyjny, aby pobrać dane
+    OPEN wynik FOR
+        SELECT 
+            u.id_uzytkownik AS ID_Uzytkownika,
+            u.imie AS Imie_Uzytkownika,
+            StatystykiOdtworzen.LacznyCzasOdtwarzaniaUzytkownika(u.id_uzytkownik) AS Laczny_Czas_Odtworzen,
+            StatystykiOdtworzen.ZnajdzNajczesciejOdtwarzanyUtworUzytkownika(u.id_uzytkownik) AS Najczesciej_Odtwarzany_Utwor
+        FROM 
+            Uzytkownik u
+        WHERE 
+            u.id_uzytkownik = id_uzytkownikU;
+
+    -- Usuń istniejącą kolekcję (jeśli istnieje)
+    IF APEX_COLLECTION.COLLECTION_EXISTS('PODSUMOWANIE_ODTWARZANIA') THEN
+        APEX_COLLECTION.DELETE_COLLECTION('PODSUMOWANIE_ODTWARZANIA');
+    END IF;
+
+    -- Utwórz nową kolekcję
+    APEX_COLLECTION.CREATE_COLLECTION('PODSUMOWANIE_ODTWARZANIA');
+
+    -- Iteracja po kursorze i dodanie danych do kolekcji
+    LOOP
+        FETCH wynik INTO v_id_uzytkownik, v_imie_uzytkownika, v_laczny_czas_odtworzen, v_najczesciej_odtwarzany_utwor;
+        EXIT WHEN wynik%NOTFOUND;
+
+        APEX_COLLECTION.ADD_MEMBER(
+            p_collection_name => 'PODSUMOWANIE_ODTWARZANIA',
+            p_c001 => TO_CHAR(v_id_uzytkownik), -- Kolumna 1: ID użytkownika
+            p_c002 => v_imie_uzytkownika,      -- Kolumna 2: Imię użytkownika
+            p_c003 => TO_CHAR(v_laczny_czas_odtworzen), -- Kolumna 3: Łączny czas odtworzeń
+            p_c004 => v_najczesciej_odtwarzany_utwor    -- Kolumna 4: Najczęściej odtwarzany utwór
+        );
+    END LOOP;
+
+    -- Zamknięcie kursora
+    CLOSE wynik;
+
+    -- Komunikat do logów
+    DBMS_OUTPUT.PUT_LINE('Dane dla użytkownika o ID ' || id_uzytkownikU || ' zostały zapisane do kolekcji.');
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('Brak danych o użytkowniku lub odtworzeniach dla ID: ' || id_uzytkownikU);
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Wystąpił błąd podczas generowania podsumowania dla użytkownika o ID: ' || id_uzytkownikU);
+END PodsumowanieOdtwarzaniaUzytkownika;
+
+
+    PROCEDURE UsunStareDaneOdtworzen (
+        liczba_dni IN INTEGER
+    ) IS
+    BEGIN
+        DELETE FROM HistoriaOdtworzen
+        WHERE data_odtworzenia < TRUNC(SYSDATE) - liczba_dni;
+
+        DBMS_OUTPUT.PUT_LINE('Dane odtworzeń starsze niż ' || liczba_dni || ' dni zostały usunięte.');
+    END UsunStareDaneOdtworzen;
+
+
+    FUNCTION ZnajdzNajczesciejOdtwarzanyUtworUzytkownika (
+    id_uzytkownik IN NUMBER
+) RETURN VARCHAR2 IS
+    utwor_id NUMBER;
+    tytul_utworu VARCHAR2(100);
+BEGIN
+    -- Pobierz ID utworu, który był najczęściej odtwarzany przez użytkownika
+    SELECT ID_UTWORU
+    INTO utwor_id
+    FROM (
+        SELECT ID_UTWORU, COUNT(*) AS LICZBA_ODTWORZEN
+        FROM HISTORIAODTWORZEN
+        WHERE ID_UZYTKOWNIK = znajdznajczesciejodtwarzanyutworuzytkownika.id_uzytkownik
+        GROUP BY ID_UTWORU
+        ORDER BY LICZBA_ODTWORZEN DESC
+    )
+    WHERE ROWNUM = 1;
+
+    -- Pobierz tytuł utworu na podstawie ID
+    SELECT Nazwa
+    INTO tytul_utworu
+    FROM UTWORY
+    WHERE ID_UTWORU = utwor_id;
+
+    -- Zwróć tytuł utworu
+    RETURN tytul_utworu;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Jeśli brak danych, zwróć domyślną wartość
+        RETURN 'Brak danych';
+    WHEN OTHERS THEN
+        -- Jeśli wystąpił inny błąd, zwróć odpowiedni komunikat
+        RETURN 'Błąd';
+END ZnajdzNajczesciejOdtwarzanyUtworUzytkownika;
+
+
+
+END StatystykiOdtworzen;
+/
+
+
